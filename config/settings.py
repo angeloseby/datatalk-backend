@@ -33,6 +33,10 @@ class APISettings(BaseModel):
     version: str = "1.0.0"
     description: str = ""
     cors_origins: List[str] = ["*"] 
+
+class AISettings(BaseModel):
+    """AI Provider configuration"""
+    gemini_api_key: str = ""
     
 
 class AppSettings(BaseSettings):
@@ -44,6 +48,7 @@ class AppSettings(BaseSettings):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     api: APISettings = Field(default_factory=APISettings)    
     files: FileSettings = Field(default_factory=FileSettings)
+    ai: AISettings = Field(default=AISettings)
     
     # Pydantic settings configuration
     model_config = SettingsConfigDict(

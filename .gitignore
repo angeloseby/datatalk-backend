@@ -1,0 +1,57 @@
+# General Python ignores
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+bin/
+lib/
+include/
+
+# OS and Editor ignores
+# macOS
+.DS_Store
+# Linux
+*~
+# Windows
+Thumbs.db
+ehthumbs.db
+# Editors/IDEs
+.idea/
+.vscode/
+.mypy_cache/
+.pytest_cache/
+.cache/
+
+# FastAPI and project-specific files
+# Configuration/Environment variables
+.env
+.env.*
+secrets.toml
+
+# Build artifacts and documentation
+dist/
+build/
+site/
+htmlcov/
+*.egg-info/
+docs/_build/
+
+# Testing and coverage reports
+.coverage
+coverage.xml
+nosetests.xml
+test.db
+log.txt
+
+# Docker
+# Ignore Docker-related files not meant for source control (e.g., local volumes, specific build outputs)
+# Note: Dockerfiles, compose files, etc., should generally be tracked.
+
+# Package managers (if using pipenv or poetry)
+# It is generally recommended to include lock files in version control.
+# Pipfile.lock
+# poetry.lock
