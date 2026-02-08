@@ -54,13 +54,6 @@ class AppSettings(BaseSettings):
         extra="ignore" 
     )
     
-    @model_validator(mode='after')
-    def set_debug_from_environment(self):
-        """Set debug mode based on environment"""
-        if self.environment == 'development':
-            self.debug = True
-        return self
-    
     @property
     def is_development(self) -> bool:
         return self.environment == "development"

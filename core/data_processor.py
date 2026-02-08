@@ -35,12 +35,13 @@ class DataProcessor:
         """
         Generate comprehensive data profile
         """
+        # FIX 1: Wrap numpy sums in int()
         profile = {
             "summary": {
-                "total_rows": len(df),
-                "total_columns": len(df.columns),
-                "memory_usage": df.memory_usage(deep=True).sum(),
-                "duplicate_rows": df.duplicated().sum()
+                "total_rows": int(len(df)),
+                "total_columns": int(len(df.columns)),
+                "memory_usage": int(df.memory_usage(deep=True).sum()),
+                "duplicate_rows": int(df.duplicated().sum())
             },
             "columns": {},
             "missing_values": {},
@@ -51,12 +52,13 @@ class DataProcessor:
             col_data = df[column]
             dtype = str(col_data.dtype)
             
+            # FIX 2: Wrap isnull().sum() and nunique() in int()
             column_info = {
                 "dtype": dtype,
-                "total": len(col_data),
-                "missing": col_data.isnull().sum(),
-                "missing_percentage": round((col_data.isnull().sum() / len(col_data)) * 100, 2),
-                "unique": col_data.nunique()
+                "total": int(len(col_data)),
+                "missing": int(col_data.isnull().sum()),
+                "missing_percentage": round((float(col_data.isnull().sum()) / len(col_data)) * 100, 2),
+                "unique": int(col_data.nunique())
             }
             
             # Numerical columns
@@ -77,6 +79,7 @@ class DataProcessor:
             elif pd.api.types.is_string_dtype(col_data) or pd.api.types.is_categorical_dtype(col_data):
                 top_values = col_data.value_counts().head(5).to_dict()
                 column_info.update({
+                    # FIX 3: Ensure keys and values are standard types
                     "top_values": {str(k): int(v) for k, v in top_values.items()}
                 })
             

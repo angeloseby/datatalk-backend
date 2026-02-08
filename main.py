@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from config.settings import settings
-from router import file_upload
+from router import chat, file_upload
 
 # Suggestion: Use your settings to configure the app title/version!
 app = FastAPI(
@@ -19,6 +19,7 @@ app.add_middleware(
 )
 
 app.include_router(file_upload.router)
+app.include_router(chat.router)
 
 @app.get("/")
 def root():
