@@ -36,7 +36,7 @@ class APISettings(BaseModel):
 
 class AISettings(BaseModel):
     """AI Provider configuration"""
-    gemini_api_key: str = ""
+    groq_api_key: str = ""
     
 
 class AppSettings(BaseSettings):

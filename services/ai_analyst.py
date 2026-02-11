@@ -1,6 +1,6 @@
 from io import StringIO
 import pandas as pd
-import google.generativeai as genai
+from groq import Groq
 import os
 import asyncio
 from core.status_tracker import tracker, JobStatus
@@ -11,12 +11,11 @@ class AIAnalyst:
     def __init__(self):
         self.processed_dir = "storage/processed"
         
-        # Configure Gemini
-        if not settings.ai.gemini_api_key:
-            print("WARNING: GEMINI_API_KEY is missing in .env")
+        # Configure Groq
+        if not settings.ai.groq_api_key:
+            print("WARNING: GROK_API_KEY is missing in .env")
         else:
-            genai.configure(api_key=settings.ai.gemini_api_key)
-            self.model = genai.GenerativeModel('gemini-3-flash-preview') # Or 'gemini-pro'
+            self.client = Groq(api_key=settings.ai.groq_api_key)
 
     def _get_file_path(self, file_id: str) -> str:
         return f"{self.processed_dir}/{file_id}.parquet"
@@ -64,11 +63,10 @@ class AIAnalyst:
             # Load Data
             df = pd.read_parquet(file_path)
             
-            # 2. Ask Gemini
+            # 2. Ask Grok
             await tracker.update_status(job_id, JobStatus.PROCESSING, "Consulting AI...", 30)
             
             # Prepare schema summary for the AI
-            # We map dtypes to simple strings for the prompt
             columns_summary = []
             for col, dtype in df.dtypes.items():
                 columns_summary.append(f"- {col} ({dtype})")
@@ -90,21 +88,33 @@ class AIAnalyst:
             4. Return ONLY the python code. Do not use Markdown (```).
             """
             
-            # Call Gemini (run in thread to not block asyncio)
+            # Call Grok (run in thread to not block asyncio)
             response = await asyncio.to_thread(
-                self.model.generate_content, 
-                prompt
+                self.client.chat.completions.create,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a Python data analyst assistant that writes clean, efficient pandas code."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                model="openai/gpt-oss-120b",  # Or "llama3-70b-8192", "llama3-8b-8192", "gemma2-9b-it"
+                temperature=0.1,
+                max_tokens=1000,
+                stream=False
             )
             
-            generated_code = response.text
+            generated_code = response.choices[0].message.content
             
-            # 3. Sanitize Code (Remove markdown if Gemini adds it)
+            # 3. Sanitize Code (Remove markdown if Grok adds it)
             cleaned_code = generated_code.replace("```python", "").replace("```", "").strip()
             
             await tracker.update_status(job_id, JobStatus.PROCESSING, "Executing analysis...", 60)
             
             # 4. Secure Execution
-            # We create a local scope with 'df' and 'pd' available
             local_vars = {"df": df, "pd": pd}
             
             try:

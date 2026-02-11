@@ -28,7 +28,7 @@ ehthumbs.db
 
 # FastAPI and project-specific files
 # Configuration/Environment variables
-.env
+env
 .env.*
 secrets.toml
 
@@ -55,3 +55,6 @@ log.txt
 # It is generally recommended to include lock files in version control.
 # Pipfile.lock
 # poetry.lock
+.env
+.env
+.env
