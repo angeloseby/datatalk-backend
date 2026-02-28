@@ -16,11 +16,11 @@ app.add_middleware(
     # In local development Flutter Web uses dynamic localhost ports.
     # This keeps strict explicit origins from settings, while allowing
     # localhost/127.0.0.1 on any port during development.
-    allow_origin_regex=(
-        r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
-        if settings.is_development
-        else None
-    ),
+    # allow_origin_regex=(
+    #     r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+    #     if settings.is_development
+    #     else None
+    # ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
