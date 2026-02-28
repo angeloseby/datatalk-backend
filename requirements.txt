@@ -7,3 +7,7 @@ pydantic_settings==2.12.0
 uvicorn
 pyarrow
 fastparquet
+python-multipart
+openpyxl
+plotly
+redis

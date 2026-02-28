@@ -1,7 +1,6 @@
-import os
-from typing import Optional, List
+from typing import List
 from functools import lru_cache
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class DatabaseSettings(BaseModel):
@@ -25,7 +24,11 @@ class FileSettings(BaseModel):
     allowed_file_types: List[str] = Field(
         default_factory=lambda: ['text/csv', 'application/vnd.ms-excel']
     )
-    max_file_size: int = 10 * 1024 * 1024  # 10MB
+    max_file_size: int = 10  # In megabytes
+
+    @property
+    def max_file_size_bytes(self) -> int:
+        return self.max_file_size * 1024 * 1024
     
 class APISettings(BaseModel):
     """API related configuration"""
@@ -38,6 +41,13 @@ class AISettings(BaseModel):
     """AI Provider configuration"""
     groq_api_key: str = ""
     
+class RedisSettings(BaseModel):
+    """Redis-backed status tracker configuration"""
+    url: str = "redis://localhost:6379/0"
+    job_key_prefix: str = "datatalk:job:"
+    job_ttl_seconds: int = 24 * 60 * 60
+    socket_connect_timeout: float = 2.0
+    socket_timeout: float = 2.0
 
 class AppSettings(BaseSettings):
     """Main application settings"""
@@ -48,7 +58,8 @@ class AppSettings(BaseSettings):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     api: APISettings = Field(default_factory=APISettings)    
     files: FileSettings = Field(default_factory=FileSettings)
-    ai: AISettings = Field(default=AISettings)
+    ai: AISettings = Field(default_factory=AISettings)
+    redis: RedisSettings = Field(default_factory=RedisSettings)
     
     # Pydantic settings configuration
     model_config = SettingsConfigDict(

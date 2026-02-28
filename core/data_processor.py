@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import warnings
 from typing import Dict, Any, List
 import json
 
@@ -12,22 +13,49 @@ class DataProcessor:
         """
         # Make a copy
         cleaned_df = df.copy()
-        
-        # Remove duplicate rows
+
+        # Normalize object/string columns by trimming and converting blank strings to missing values.
+        text_columns = cleaned_df.select_dtypes(include=["object", "string"]).columns
+        for col in text_columns:
+            cleaned_df[col] = cleaned_df[col].apply(
+                lambda value: value.strip() if isinstance(value, str) else value
+            )
+            cleaned_df[col] = cleaned_df[col].replace(r"^\s*$", pd.NA, regex=True)
+
+        # Remove exact duplicate rows.
         cleaned_df = cleaned_df.drop_duplicates()
-        
-        # Strip whitespace from string columns
-        string_columns = cleaned_df.select_dtypes(include=['object']).columns
-        for col in string_columns:
-            cleaned_df[col] = cleaned_df[col].str.strip()
-        
-        # Convert date columns if possible
-        for col in cleaned_df.columns:
-            if cleaned_df[col].dtype == 'object':
-                try:
-                    cleaned_df[col] = pd.to_datetime(cleaned_df[col])
-                except (ValueError, TypeError):
-                    pass
+
+        # Convert object/string columns that are fully parseable into datetime.
+        for col in cleaned_df.select_dtypes(include=["object", "string"]).columns:
+            non_null_values = cleaned_df[col].dropna()
+            if non_null_values.empty:
+                continue
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    pd.to_datetime(non_null_values, errors="raise")
+                    cleaned_df[col] = pd.to_datetime(cleaned_df[col], errors="coerce")
+            except (ValueError, TypeError, OverflowError):
+                # Gracefully keep the original column when parsing is not reliable.
+                continue
+
+        # Drop columns where more than 90% of values are null.
+        null_ratio = cleaned_df.isna().mean()
+        high_null_columns = null_ratio[null_ratio > 0.90].index
+        if len(high_null_columns) > 0:
+            cleaned_df = cleaned_df.drop(columns=high_null_columns)
+
+        # Impute missing numeric values using median per column.
+        numeric_columns = cleaned_df.select_dtypes(include=[np.number]).columns
+        for col in numeric_columns:
+            median_value = cleaned_df[col].median(skipna=True)
+            if pd.notna(median_value):
+                cleaned_df[col] = cleaned_df[col].fillna(median_value)
+
+        # Fill missing categorical/text values with "Unknown".
+        categorical_columns = cleaned_df.select_dtypes(include=["object", "category", "string"]).columns
+        for col in categorical_columns:
+            cleaned_df[col] = cleaned_df[col].fillna("Unknown")
         
         return cleaned_df
     

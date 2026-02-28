@@ -14,4 +14,5 @@ class ChatJobResponse(BaseModel):
 class ChatResult(BaseModel):
     answer: str
     generated_code: Optional[str] = None
-    data: Optional[Dict[str, Any]] = None
+    data: Optional[list[Dict[str, Any]]] = None
+    chart: Optional[Dict[str, Any]] = None

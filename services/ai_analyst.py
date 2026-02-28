@@ -1,58 +1,214 @@
-from io import StringIO
-import pandas as pd
-from groq import Groq
-import os
+import ast
 import asyncio
+import builtins
+import json
+import os
+from pathlib import Path
+from tempfile import gettempdir
+import numpy as np
+import pandas as pd
+import plotly.express as px
+from groq import Groq
 from core.status_tracker import tracker, JobStatus
 from schemas.chat import ChatResult
 from config.settings import settings
 
+SAFE_BUILTINS = {
+    "abs": builtins.abs,
+    "all": builtins.all,
+    "any": builtins.any,
+    "bool": builtins.bool,
+    "dict": builtins.dict,
+    "enumerate": builtins.enumerate,
+    "float": builtins.float,
+    "int": builtins.int,
+    "isinstance": builtins.isinstance,
+    "len": builtins.len,
+    "list": builtins.list,
+    "max": builtins.max,
+    "min": builtins.min,
+    "range": builtins.range,
+    "round": builtins.round,
+    "set": builtins.set,
+    "sorted": builtins.sorted,
+    "str": builtins.str,
+    "sum": builtins.sum,
+    "tuple": builtins.tuple,
+    "zip": builtins.zip,
+}
+
 class AIAnalyst:
+    SAFE_IMPORT_LINES = {
+        "import plotly.express as px",
+        "from plotly import express as px",
+        "import json",
+    }
+    FORBIDDEN_NODE_TYPES = (
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+        ast.ClassDef,
+        ast.Lambda,
+        ast.With,
+        ast.AsyncWith,
+        ast.While,
+        ast.For,
+        ast.AsyncFor,
+        ast.Try,
+        ast.Raise,
+        ast.Global,
+        ast.Nonlocal,
+        ast.Delete,
+    )
+    FORBIDDEN_CALLS = {
+        "compile",
+        "delattr",
+        "eval",
+        "exec",
+        "getattr",
+        "globals",
+        "input",
+        "locals",
+        "open",
+        "setattr",
+        "__import__",
+    }
+    FORBIDDEN_ROOT_NAMES = {
+        "builtins",
+        "os",
+        "pathlib",
+        "requests",
+        "shutil",
+        "socket",
+        "subprocess",
+        "sys",
+    }
+
     def __init__(self):
-        self.processed_dir = "storage/processed"
+        self.processed_dir = Path(gettempdir()) / "datatalk_backend" / "processed"
+        self.client = None
         
         # Configure Groq
-        if not settings.ai.groq_api_key:
-            print("WARNING: GROK_API_KEY is missing in .env")
-        else:
+        if settings.ai.groq_api_key:
             self.client = Groq(api_key=settings.ai.groq_api_key)
+        else:
+            print("WARNING: GROQ_API_KEY is missing in .env")
 
     def _get_file_path(self, file_id: str) -> str:
-        return f"{self.processed_dir}/{file_id}.parquet"
+        return str(self.processed_dir / f"{file_id}.parquet")
 
-    def _generate_prompt(self, df: pd.DataFrame, question: str) -> str:
-        """
-        Creates a prompt that forces the LLM to write specific Pandas code.
-        """
-        buffer = StringIO()
-        df.info(buf=buffer)
-        schema_info = buffer.getvalue()
-        
-        return f"""
-        You are a generic Python Data Analyst. 
-        You are given a Pandas DataFrame named 'df'.
-        
-        DataFrame Schema Info:
-        {schema_info}
-        
-        User Question: {question}
-        
-        Your Task:
-        1. Write a valid Python code snippet using Pandas to answer the question.
-        2. ASSIGN the final answer to a variable named 'result'.
-        3. The 'result' variable can be a number, string, dataframe, or dictionary.
-        4. Do NOT use print() statements.
-        5. Return ONLY the code. No markdown, no explanations.
-        
-        Example Output:
-        result = df['salary'].mean()
-        """
+    def _get_call_name(self, node: ast.AST) -> str | None:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            parent_name = self._get_call_name(node.value)
+            if parent_name:
+                return f"{parent_name}.{node.attr}"
+            return node.attr
+        return None
+
+    def _sanitize_generated_code(self, code: str) -> str:
+        sanitized = code.replace("```python", "").replace("```", "").strip()
+        if not sanitized:
+            return sanitized
+
+        filtered_lines = []
+        for line in sanitized.splitlines():
+            if line.strip() in self.SAFE_IMPORT_LINES:
+                continue
+            filtered_lines.append(line)
+        return "\n".join(filtered_lines).strip()
+
+    def _validate_generated_code(self, code: str) -> None:
+        try:
+            tree = ast.parse(code, mode="exec")
+        except SyntaxError as exc:
+            raise ValueError(f"Generated code has invalid syntax: {exc.msg}") from exc
+
+        has_result_table_assignment = False
+        for node in ast.walk(tree):
+            if isinstance(node, self.FORBIDDEN_NODE_TYPES):
+                raise ValueError("Generated code contains forbidden Python constructs.")
+
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                raise ValueError("Generated code contains forbidden imports.")
+
+            if isinstance(node, ast.Name) and node.id.startswith("__"):
+                raise ValueError("Generated code contains restricted names.")
+
+            if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
+                raise ValueError("Generated code contains restricted attribute access.")
+
+            if isinstance(node, ast.Assign):
+                if any(isinstance(target, ast.Name) and target.id == "result_table" for target in node.targets):
+                    has_result_table_assignment = True
+            if isinstance(node, ast.AnnAssign):
+                if isinstance(node.target, ast.Name) and node.target.id == "result_table":
+                    has_result_table_assignment = True
+
+            if isinstance(node, ast.Call):
+                call_name = self._get_call_name(node.func)
+                if call_name:
+                    root = call_name.split(".")[0]
+                    if root in self.FORBIDDEN_ROOT_NAMES or call_name in self.FORBIDDEN_CALLS:
+                        raise ValueError("Generated code attempted restricted operations.")
+
+        if not has_result_table_assignment:
+            raise ValueError("Generated code must assign the final value to a 'result_table' variable.")
+
+    def _coerce_to_dataframe(self, value: object) -> pd.DataFrame:
+        if isinstance(value, pd.DataFrame):
+            return value
+        if isinstance(value, pd.Series):
+            name = value.name if value.name is not None else "value"
+            return value.to_frame(name=name)
+        if isinstance(value, dict):
+            try:
+                return pd.DataFrame(value)
+            except ValueError:
+                return pd.DataFrame([value])
+        if isinstance(value, list):
+            return pd.DataFrame(value)
+        if np.isscalar(value):
+            return pd.DataFrame([{"value": value}])
+        try:
+            return pd.DataFrame(value)
+        except Exception as exc:
+            raise ValueError("result_table must be convertible to a pandas DataFrame.") from exc
+
+    def _normalize_chart_payload(self, chart_value: object) -> dict | None:
+        if chart_value is None:
+            return None
+
+        if isinstance(chart_value, dict):
+            return chart_value
+
+        if isinstance(chart_value, str):
+            stripped_chart = chart_value.strip()
+            if not stripped_chart:
+                return None
+            try:
+                parsed = json.loads(stripped_chart)
+            except json.JSONDecodeError:
+                return None
+            return parsed if isinstance(parsed, dict) else None
+
+        if hasattr(chart_value, "to_json"):
+            try:
+                parsed = json.loads(chart_value.to_json())
+            except Exception:
+                return None
+            return parsed if isinstance(parsed, dict) else None
+
+        return None
 
     async def analyze_background(self, job_id: str, file_id: str, question: str):
         """
         The main loop: Load -> Think -> Code -> Execute -> Save
         """
         try:
+            if self.client is None:
+                raise RuntimeError("AI provider is not configured on the server.")
+
             # 1. Start
             await tracker.update_status(job_id, JobStatus.PROCESSING, "Loading data...", 10)
             file_path = self._get_file_path(file_id)
@@ -75,6 +231,7 @@ class AIAnalyst:
             prompt = f"""
             You are a Python Data Analyst. 
             You are given a Pandas DataFrame named 'df'.
+            You are also given Plotly Express as 'px'.
             
             Columns:
             {schema_str}
@@ -83,9 +240,12 @@ class AIAnalyst:
             
             Requirements:
             1. Write Python code to answer the question.
-            2. ASSIGN the final answer to a variable named 'result'.
-            3. Use the 'df' variable directly.
-            4. Return ONLY the python code. Do not use Markdown (```).
+            2. ASSIGN a pandas DataFrame to a variable named 'result_table'.
+            3. Build a Plotly chart and ASSIGN JSON output to 'result_chart' using fig.to_json().
+            4. Use 'df' and 'px' directly; do not import anything.
+            5. Assign result_table before chart logic.
+            6. If a meaningful chart is not possible, set result_chart = None.
+            7. Return ONLY python code. Do not use Markdown (```).
             """
             
             # Call Grok (run in thread to not block asyncio)
@@ -107,35 +267,59 @@ class AIAnalyst:
                 stream=False
             )
             
-            generated_code = response.choices[0].message.content
+            generated_code = response.choices[0].message.content or ""
+            if not generated_code.strip():
+                raise ValueError("AI returned an empty code response.")
             
             # 3. Sanitize Code (Remove markdown if Grok adds it)
-            cleaned_code = generated_code.replace("```python", "").replace("```", "").strip()
+            cleaned_code = self._sanitize_generated_code(generated_code)
+            self._validate_generated_code(cleaned_code)
             
             await tracker.update_status(job_id, JobStatus.PROCESSING, "Executing analysis...", 60)
             
             # 4. Secure Execution
-            local_vars = {"df": df, "pd": pd}
+            global_vars = {
+                "__builtins__": SAFE_BUILTINS,
+                "pd": pd,
+                "np": np,
+                "px": px,
+                "json": json,
+            }
+            local_vars = {"df": df}
             
+            execution_error = None
             try:
-                exec(cleaned_code, {}, local_vars)
+                exec(cleaned_code, global_vars, local_vars)
             except Exception as code_error:
-                raise ValueError(f"Generated code failed to execute: {code_error}\nCode was: {cleaned_code}")
-                
-            # 5. Extract Result
-            final_answer = local_vars.get("result")
-            
-            if final_answer is None:
-                raise ValueError("The AI code ran but did not assign a 'result' variable.")
+                execution_error = code_error
 
-            # Format the answer for the UI
-            final_answer_str = str(final_answer)
-            final_data = None
-            
-            # If the result is a DataFrame/Series, convert to dict for JSON serialization
-            if isinstance(final_answer, (pd.DataFrame, pd.Series)):
-                final_data = final_answer.to_dict()
-                final_answer_str = "Generated a data table/series (see attached data)."
+            # 5. Extract table and chart results (table is required, chart is optional)
+            result_table = local_vars.get("result_table")
+            if result_table is None:
+                raise ValueError(
+                    "The AI code did not assign 'result_table'."
+                    + (
+                        f" Execution error: {execution_error}"
+                        if execution_error
+                        else ""
+                    )
+                )
+
+            table_df = self._coerce_to_dataframe(result_table)
+            final_data = table_df.to_dict(orient="records")
+
+            result_chart = local_vars.get("result_chart")
+            chart_payload = self._normalize_chart_payload(result_chart)
+
+            if execution_error is not None:
+                chart_payload = None
+
+            final_answer_str = "Generated a data table and chart."
+            if chart_payload is None:
+                if execution_error is not None:
+                    final_answer_str = "Generated a data table. Chart generation failed, so chart was omitted."
+                else:
+                    final_answer_str = "Generated a data table. No chart was returned."
             
             await tracker.update_status(job_id, JobStatus.PROCESSING, "Finalizing...", 90)
 
@@ -143,7 +327,8 @@ class AIAnalyst:
             result_payload = ChatResult(
                 answer=final_answer_str,
                 generated_code=cleaned_code,
-                data=final_data
+                data=final_data,
+                chart=chart_payload,
             ).model_dump()
             
             await tracker.set_result(job_id, result_payload)

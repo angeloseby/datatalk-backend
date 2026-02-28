@@ -1,91 +1,107 @@
 from pathlib import Path
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, BackgroundTasks
-import pandas as pd
+from tempfile import gettempdir
+from time import time
 import uuid
-import os
-from datetime import datetime
-from typing import Dict, Any
 
-# --- IMPORTS FOR SECURE UPLOAD ---
-from core.file_manager import save_upload_file_securely
-from utils.file_validator import valid_content_length, validate_csv_file
-from core.data_processor import DataProcessor
-from schemas.upload import UploadResponse, FileMetadata
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+
 from config.settings import get_settings
-
-# --- IMPORT STATUS TRACKER ---
-from core.status_tracker import tracker, JobStatus
+from core.data_processor import DataProcessor
+from core.status_tracker import JobStatus, tracker
+from schemas.upload import FileMetadata, UploadResponse
+from utils.file_validator import SupportedFileType, read_tabular_data, valid_content_length, validate_tabular_upload
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 settings = get_settings()
 
-# REMOVED: uploaded_files = {}  <-- We don't need this memory dict anymore
+TMP_BASE_DIR = Path(gettempdir()) / "datatalk_backend"
+TMP_PROCESSED_DIR = TMP_BASE_DIR / "processed"
+TMP_FILE_TTL_SECONDS = 60 * 60  # 1 hour
+TMP_MAX_PROCESSED_FILES = 128
+
+
+def _prepare_tmp_processed_dir() -> None:
+    TMP_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _cleanup_tmp_processed_files() -> None:
+    if not TMP_PROCESSED_DIR.exists():
+        return
+
+    now = time()
+    files = [file for file in TMP_PROCESSED_DIR.iterdir() if file.is_file()]
+
+    for file_path in files:
+        try:
+            if (now - file_path.stat().st_mtime) > TMP_FILE_TTL_SECONDS:
+                file_path.unlink(missing_ok=True)
+        except OSError:
+            continue
+
+    remaining_files = sorted(
+        [file for file in TMP_PROCESSED_DIR.iterdir() if file.is_file()],
+        key=lambda item: item.stat().st_mtime,
+    )
+
+    while len(remaining_files) > TMP_MAX_PROCESSED_FILES:
+        oldest = remaining_files.pop(0)
+        try:
+            oldest.unlink(missing_ok=True)
+        except OSError:
+            pass
+
 
 @router.post("/csv", response_model=UploadResponse)
 async def upload_csv(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    file_size_header: int = Depends(valid_content_length) # Validates size before upload
+    _content_length: int | None = Depends(valid_content_length),
 ):
     """
-    Upload a CSV file for analysis.
-    Uses 'Stream Saving' to prevent memory crashes.
+    Upload a CSV or XLSX file for analysis.
     """
     file_id = str(uuid.uuid4())
-    
-    # 1. Initialize the Status Tracker immediately
     await tracker.create_job(file_id)
 
-    # Setup paths
-    temp_dir = Path("storage/temp")
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    file_path = temp_dir / f"{file_id}_{file.filename}"
+    safe_filename = Path(file.filename or "upload.csv").name
 
     try:
-        # 2. Secure Stream Save (Writes to disk in chunks)
-        real_file_size = await save_upload_file_securely(file, file_path)
+        file_bytes, file_type, df_preview = await validate_tabular_upload(file, preview_rows=5)
+        real_file_size = len(file_bytes)
+    except HTTPException as exc:
+        await tracker.set_error(file_id, str(exc.detail))
+        raise
+    except Exception as exc:
+        await tracker.set_error(file_id, str(exc))
+        raise HTTPException(status_code=400, detail=f"Upload failed: {str(exc)}")
+    finally:
+        await file.close()
 
-        # 3. Quick Validation (Read first 5 rows only)
-        # We read from DISK now, not memory
-        df_preview = pd.read_csv(file_path, nrows=5)
-        
-        if len(df_preview.columns) < 1:
-            raise ValueError("CSV has no columns")
-
-    except Exception as e:
-        # If upload/validation fails, mark job as failed and clean up
-        if file_path.exists():
-            os.remove(file_path)
-        await tracker.set_error(file_id, str(e))
-        raise HTTPException(status_code=400, detail=f"Upload failed: {str(e)}")
-
-    # 4. Queue Background Processing
     background_tasks.add_task(
         process_uploaded_file,
         file_id=file_id,
-        file_path=str(file_path),
-        original_filename=file.filename
+        file_bytes=file_bytes,
+        file_type=file_type,
+        original_filename=safe_filename,
     )
-    
-    # 5. Return Initial Response
-    # Note: We fetch the fresh job status from the tracker
+
     job = await tracker.get_status(file_id)
-    
+
     return UploadResponse(
         success=True,
         message="File uploaded successfully. Processing started.",
         file_id=file_id,
-        # We map the JobData to your FileMetadata schema
         metadata=FileMetadata(
             file_id=file_id,
-            filename=file.filename,
+            filename=safe_filename,
             size_bytes=real_file_size,
             columns=list(df_preview.columns),
-            rows=0, # Unknown yet, will be updated in background
+            rows=0,
             upload_time=job.created_at,
-            status=job.status
-        )
+            status=job.status,
+        ),
     )
+
 
 @router.get("/status/{file_id}")
 async def get_upload_status(file_id: str):
@@ -93,59 +109,53 @@ async def get_upload_status(file_id: str):
     Check the processing status of an uploaded file via the Tracker
     """
     job = await tracker.get_status(file_id)
-    
+
     if not job:
         raise HTTPException(status_code=404, detail="File processing job not found")
-    
+
     return job
+
 
 async def process_uploaded_file(
     file_id: str,
-    file_path: str,
-    original_filename: str
+    file_bytes: bytes,
+    file_type: SupportedFileType,
+    original_filename: str,
 ):
     """
-    Background task that updates the StatusTracker at every step
+    Background task that updates the StatusTracker at every step.
     """
+    processed_path: Path | None = None
+
     try:
         processor = DataProcessor()
-        
-        # UPDATE STATUS: Loading
+
         await tracker.update_status(file_id, JobStatus.PROCESSING, "Loading data...", 10)
-        
-        # Load full dataframe
-        df = pd.read_csv(file_path)
-        
-        # UPDATE STATUS: Cleaning
+        df = read_tabular_data(file_bytes, file_type=file_type)
+
         await tracker.update_status(file_id, JobStatus.PROCESSING, "Cleaning data...", 30)
         cleaned_df = processor.clean_data(df)
-        
-        # UPDATE STATUS: Profiling
+
         await tracker.update_status(file_id, JobStatus.PROCESSING, "Generating profile...", 60)
         profile = processor.generate_profile(cleaned_df)
-        
-        # Save processed data
+
         await tracker.update_status(file_id, JobStatus.PROCESSING, "Saving results...", 90)
-        
-        os.makedirs("storage/processed", exist_ok=True)
-        processed_path = f"storage/processed/{file_id}.parquet"
+        _prepare_tmp_processed_dir()
+        _cleanup_tmp_processed_files()
+        processed_path = TMP_PROCESSED_DIR / f"{file_id}.parquet"
         cleaned_df.to_parquet(processed_path)
-        
-        # FINAL SUCCESS: Store the result in the tracker
+
         result_data = {
-            "processed_path": processed_path,
+            "processed_path": str(processed_path),
             "profile": profile,
             "columns": list(cleaned_df.columns),
-            "rows": len(cleaned_df)
+            "rows": len(cleaned_df),
+            "file_type": file_type,
+            "filename": original_filename,
         }
         await tracker.set_result(file_id, result_data)
-        
-        # Cleanup temp file
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        
-    except Exception as e:
-        # FINAL FAILURE: Report error to tracker
-        await tracker.set_error(file_id, str(e))
-        if os.path.exists(file_path):
-            os.remove(file_path)
+
+    except Exception as exc:
+        if processed_path and processed_path.exists():
+            processed_path.unlink(missing_ok=True)
+        await tracker.set_error(file_id, str(exc))
