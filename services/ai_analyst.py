@@ -250,6 +250,7 @@ Given a user's question, the dataset schema, and any prior conversation, decide 
 
 Respond with ONLY a JSON object (no markdown, no explanation):
 {{
+  "is_conversational": true/false,
   "needs_clarification": true/false,
   "clarification_question": "question to ask the user (only if needs_clarification is true)",
   "needs_code": true/false,
@@ -259,8 +260,9 @@ Respond with ONLY a JSON object (no markdown, no explanation):
 }}
 
 Decision rules:
-- "needs_clarification": true if the question is ambiguous or incomplete. Examples: "show me the top items" (top by what metric?), "filter the data" (filter by what?), "compare them" (compare what?). Set false if the question is clear enough to answer, even if imprecise. When there is conversation history, use it to resolve ambiguity before asking for clarification.
-- "needs_code": false if the question can be answered from the schema alone (e.g. "what columns exist?"). true if it requires data computation. Ignored if needs_clarification is true.
+- "is_conversational": true if the question is a greeting, small talk, thank you, or general conversation NOT related to data analysis. Examples: "hi", "hello", "how are you?", "thanks", "what can you do?", "who are you?". Set false for any data-related question.
+- "needs_clarification": true if the question is data-related but ambiguous or incomplete. Examples: "show me the top items" (top by what metric?), "filter the data" (filter by what?). Set false if the question is clear enough to answer. When there is conversation history, use it to resolve ambiguity before asking for clarification. Always false if is_conversational is true.
+- "needs_code": false if the question can be answered from the schema alone (e.g. "what columns exist?"). true if it requires data computation. Ignored if is_conversational or needs_clarification is true.
 - "needs_table": true if the user wants to see data rows, rankings, comparisons, or aggregated results.
 - "needs_chart": true if the user explicitly asks for a chart/plot/visualization, or if the question involves trends, distributions, or comparisons that benefit from visualization.
 """
@@ -295,6 +297,7 @@ Decision rules:
                     raise ValueError("Could not parse plan JSON")
 
             result = {
+                "is_conversational": bool(plan.get("is_conversational", False)),
                 "needs_clarification": bool(plan.get("needs_clarification", False)),
                 "clarification_question": plan.get("clarification_question", ""),
                 "needs_code": bool(plan.get("needs_code", True)),
@@ -302,9 +305,9 @@ Decision rules:
                 "needs_chart": bool(plan.get("needs_chart", True)),
             }
             self._logger.info(
-                "Plan: clarify=%s code=%s table=%s chart=%s — %s",
-                result["needs_clarification"], result["needs_code"],
-                result["needs_table"], result["needs_chart"],
+                "Plan: conv=%s clarify=%s code=%s table=%s chart=%s — %s",
+                result["is_conversational"], result["needs_clarification"],
+                result["needs_code"], result["needs_table"], result["needs_chart"],
                 plan.get("reasoning", "no reason given"),
             )
             return result
@@ -312,6 +315,7 @@ Decision rules:
         except Exception as exc:
             self._logger.warning("Planning failed (%s) — defaulting to full output", exc)
             return {
+                "is_conversational": False,
                 "needs_clarification": False,
                 "clarification_question": "",
                 "needs_code": True,
@@ -417,10 +421,15 @@ Decision rules:
 
 {context}
 
-Based ONLY on the information above, provide a concise, natural-language answer
-to the user's question. Be specific with numbers and insights.
-Do not mention code, DataFrames, or technical implementation details.
-Keep it to 2-4 sentences."""
+Based ONLY on the information above, provide a clear, well-formatted answer to the user's question.
+
+Formatting rules:
+- Use **bold** for key numbers, metrics, and important terms.
+- Use bullet points (- ) for lists of items or findings.
+- Use numbered lists (1. 2. 3.) for sequential steps or rankings.
+- Keep it concise (3-5 sentences or a short list).
+- Do not mention code, DataFrames, Python, or technical implementation details.
+- Do not use headers (# ## ###) unless the answer has multiple distinct sections."""
 
         try:
             summary_response = await asyncio.to_thread(
@@ -430,7 +439,9 @@ Keep it to 2-4 sentences."""
                         "role": "system",
                         "content": (
                             "You summarize data analysis results in clear, "
-                            "non-technical language for business users."
+                            "non-technical language for business users. "
+                            "Format your responses using markdown: use **bold** for key numbers, "
+                            "bullet points for lists, and keep responses well-structured."
                         ),
                     },
                     {"role": "user", "content": summary_prompt},
@@ -487,9 +498,48 @@ Keep it to 2-4 sentences."""
                 columns_summary.append(f"- {col} ({dtype})")
             schema_str = "\n".join(columns_summary)
 
-            # ── Phase 1: Plan (with clarification detection) ─────
+            # ── Phase 1: Plan (with clarification + conversational detection) ─
             await tracker.update_status(job_id, JobStatus.PROCESSING, "Planning response...", 20)
             plan = await self._plan_response(question, schema_str, history=history)
+
+            # ── Conversational Short-Circuit ──────────────────────
+            if plan["is_conversational"]:
+                self._logger.info("Job %s → conversational query, skipping data processing", job_id)
+                await tracker.update_status(job_id, JobStatus.PROCESSING, "Responding...", 50)
+
+                try:
+                    conv_response = await asyncio.to_thread(
+                        self.client.chat.completions.create,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are DataTalk AI, a friendly data analysis assistant. "
+                                    "The user has uploaded a dataset and is chatting with you. "
+                                    "Respond warmly and helpfully. If they greet you, greet them back "
+                                    "and let them know you're ready to help analyze their data. "
+                                    "Format your responses using markdown where appropriate. "
+                                    "Keep responses concise (2-3 sentences max)."
+                                ),
+                            },
+                            *self._build_llm_history(history),
+                            {"role": "user", "content": question},
+                        ],
+                        model="openai/gpt-oss-120b",
+                        temperature=0.7,
+                        max_tokens=200,
+                        stream=False,
+                    )
+                    friendly_reply = conv_response.choices[0].message.content or "Hello! How can I help you analyze your data?"
+                except Exception:
+                    friendly_reply = "Hello! I'm DataTalk AI — ready to help you explore your data. Just ask me a question!"
+
+                result_payload = ChatResult(
+                    summary=friendly_reply,
+                ).model_dump()
+
+                await tracker.set_result(job_id, result_payload)
+                return
 
             # ── Clarification Short-Circuit ───────────────────────
             if plan["needs_clarification"]:
