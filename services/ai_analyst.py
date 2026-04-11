@@ -13,6 +13,8 @@ from core.status_tracker import tracker, JobStatus
 from schemas.chat import ChatResult
 from config.settings import settings
 
+from core.logging_config import get_logger
+
 SAFE_BUILTINS = {
     "abs": builtins.abs,
     "all": builtins.all,
@@ -38,6 +40,8 @@ SAFE_BUILTINS = {
 }
 
 class AIAnalyst:
+    _logger = get_logger("ai_analyst")
+
     SAFE_IMPORT_LINES = {
         "import plotly.express as px",
         "from plotly import express as px",
@@ -90,8 +94,9 @@ class AIAnalyst:
         # Configure Groq
         if settings.ai.groq_api_key:
             self.client = Groq(api_key=settings.ai.groq_api_key)
+            self._logger.info("Groq client initialized successfully")
         else:
-            print("WARNING: GROQ_API_KEY is missing in .env")
+            self._logger.warning("GROQ_API_KEY is missing in .env — AI features will be unavailable")
 
     def _get_file_path(self, file_id: str) -> str:
         return str(self.processed_dir / f"{file_id}.parquet")
@@ -206,6 +211,8 @@ class AIAnalyst:
         The main loop: Load -> Think -> Code -> Execute -> Save
         """
         try:
+            self._logger.info("Job %s started — file=%s question='%s'", job_id, file_id, question[:80])
+
             if self.client is None:
                 raise RuntimeError("AI provider is not configured on the server.")
 
@@ -218,6 +225,7 @@ class AIAnalyst:
                 
             # Load Data
             df = pd.read_parquet(file_path)
+            self._logger.debug("Loaded parquet: %d rows × %d cols", len(df), len(df.columns))
             
             # 2. Ask Grok
             await tracker.update_status(job_id, JobStatus.PROCESSING, "Consulting AI...", 30)
@@ -368,6 +376,8 @@ details. Keep it to 2-4 sentences.
             ).model_dump()
             
             await tracker.set_result(job_id, result_payload)
+            self._logger.info("Job %s completed — %d rows returned", job_id, len(final_data))
 
         except Exception as e:
+            self._logger.error("Job %s failed: %s", job_id, e, exc_info=True)
             await tracker.set_error(job_id, str(e))

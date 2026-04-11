@@ -1,7 +1,10 @@
 import asyncio
 import pandas as pd
 
+from core.logging_config import get_logger
 from services.ai_analyst import AIAnalyst, SAFE_BUILTINS
+
+logger = get_logger("ai_preprocessor")
 
 
 class AIAgenticPreprocessor(AIAnalyst):
@@ -20,8 +23,10 @@ class AIAgenticPreprocessor(AIAnalyst):
         """
         try:
             if self.client is None:
-                print("WARNING: AI provider not configured – skipping agentic clean.")
+                logger.warning("AI provider not configured — skipping agentic clean")
                 return df
+
+            logger.info("Starting agentic clean on DataFrame (%d rows × %d cols)", len(df), len(df.columns))
 
             # --- Build a concise data summary for the LLM ---
             dtype_info = df.dtypes.to_string()
@@ -63,6 +68,7 @@ Write Python/Pandas code to clean this DataFrame. Apply the following strategies
 - Return ONLY executable Python code. No markdown fences, no explanations.
 """
 
+            logger.debug("Sending cleaning prompt to LLM")
             response = await asyncio.to_thread(
                 self.client.chat.completions.create,
                 messages=[
@@ -83,11 +89,12 @@ Write Python/Pandas code to clean this DataFrame. Apply the following strategies
 
             generated_code = response.choices[0].message.content or ""
             if not generated_code.strip():
-                print("WARNING: LLM returned empty code – returning original DataFrame.")
+                logger.warning("LLM returned empty code — returning original DataFrame")
                 return df
 
             # Sanitize (strip markdown fences / safe imports)
             cleaned_code = self._sanitize_generated_code(generated_code)
+            logger.debug("Executing generated cleaning code (%d chars)", len(cleaned_code))
 
             # --- Execute in a sandboxed environment ---
             global_vars = {"__builtins__": SAFE_BUILTINS, "pd": pd}
@@ -97,11 +104,12 @@ Write Python/Pandas code to clean this DataFrame. Apply the following strategies
 
             result = local_vars.get("cleaned_df", df)
             if not isinstance(result, pd.DataFrame):
-                print("WARNING: LLM code did not produce a DataFrame – returning original.")
+                logger.warning("LLM code did not produce a DataFrame — returning original")
                 return df
 
+            logger.info("Agentic clean complete: %d rows × %d cols", len(result), len(result.columns))
             return result
 
         except Exception as exc:
-            print(f"WARNING: Agentic clean failed ({exc}) – returning original DataFrame.")
+            logger.error("Agentic clean failed: %s", exc, exc_info=True)
             return df

@@ -2,7 +2,10 @@ import uuid
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from schemas.chat import ChatRequest, ChatJobResponse
 from services.ai_analyst import AIAnalyst
+from core.logging_config import get_logger
 from core.status_tracker import tracker
+
+logger = get_logger("chat")
 
 router = APIRouter(prefix="/chat", tags=["AI Analyst"])
 analyst = AIAnalyst()
@@ -21,6 +24,7 @@ async def ask_question(
         
     # 1. Generate a specific Job ID for this chat interaction
     job_id = str(uuid.uuid4())
+    logger.info("New question [%s] for file %s: '%s'", job_id, request.file_id, request.question[:80])
     
     # 2. Initialize the Tracker
     await tracker.create_job(job_id)

@@ -7,9 +7,12 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Up
 
 from config.settings import get_settings
 from core.data_processor import DataProcessor
+from core.logging_config import get_logger
 from core.status_tracker import JobStatus, tracker
 from schemas.upload import FileMetadata, UploadResponse
 from utils.file_validator import SupportedFileType, read_tabular_data, valid_content_length, validate_tabular_upload
+
+logger = get_logger("file_upload")
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 settings = get_settings()
@@ -131,14 +134,18 @@ async def process_uploaded_file(
     try:
         from services.ai_preprocessor import AIAgenticPreprocessor
 
+        logger.info("Processing file %s (%s) — %d bytes", file_id, original_filename, len(file_bytes))
+
         processor = DataProcessor()
         agent_preprocessor = AIAgenticPreprocessor()
 
         await tracker.update_status(file_id, JobStatus.PROCESSING, "Loading data into memory...", 10)
         df = read_tabular_data(file_bytes, file_type=file_type)
+        logger.debug("Raw data loaded: %d rows × %d cols", len(df), len(df.columns))
 
         await tracker.update_status(file_id, JobStatus.PROCESSING, "AI is inspecting and cleaning data...", 30)
         cleaned_df = await agent_preprocessor.agentic_clean(df)
+        logger.debug("Cleaning complete: %d rows × %d cols", len(cleaned_df), len(cleaned_df.columns))
 
         await tracker.update_status(file_id, JobStatus.PROCESSING, "Generating metadata profile...", 60)
         profile = processor.generate_profile(cleaned_df)
@@ -158,8 +165,10 @@ async def process_uploaded_file(
             "filename": original_filename,
         }
         await tracker.set_result(file_id, result_data)
+        logger.info("File %s processed successfully — %d rows saved", file_id, len(cleaned_df))
 
     except Exception as exc:
+        logger.error("File %s processing failed: %s", file_id, exc, exc_info=True)
         if processed_path and processed_path.exists():
             processed_path.unlink(missing_ok=True)
         await tracker.set_error(file_id, str(exc))

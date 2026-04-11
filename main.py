@@ -1,7 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from config.settings import settings
+from core.logging_config import setup_logging, get_logger
 from router import chat, file_upload
+
+# Initialize logging before anything else
+setup_logging()
+logger = get_logger("main")
 
 # Suggestion: Use your settings to configure the app title/version!
 app = FastAPI(
@@ -32,6 +37,7 @@ app.include_router(chat.router)
 
 @app.get("/")
 def root():
+    logger.info("Health check requested")
     return {
         "status": "running",
     }
