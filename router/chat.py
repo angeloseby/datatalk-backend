@@ -34,7 +34,8 @@ async def ask_question(
         analyst.analyze_background,
         job_id=job_id,
         file_id=request.file_id,
-        question=request.question
+        question=request.question,
+        history=[msg.model_dump() for msg in request.history],
     )
     
     return ChatJobResponse(job_id=job_id, message="AI is processing your question...")
