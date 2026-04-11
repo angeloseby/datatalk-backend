@@ -423,13 +423,16 @@ Decision rules:
 
 Based ONLY on the information above, provide a clear, well-formatted answer to the user's question.
 
-Formatting rules:
-- Use **bold** for key numbers, metrics, and important terms.
-- Use bullet points (- ) for lists of items or findings.
-- Use numbered lists (1. 2. 3.) for sequential steps or rankings.
-- Keep it concise (3-5 sentences or a short list).
-- Do not mention code, DataFrames, Python, or technical implementation details.
-- Do not use headers (# ## ###) unless the answer has multiple distinct sections."""
+Formatting rules (MANDATORY):
+- Return ONLY the clean markdown text. 
+- DO NOT wrap the entire response in triple backticks (```) or any code blocks.
+- Use **bold** for key numbers, metrics, and important business terms.
+- Use bullet points (- ) for lists of findings.
+- Use numbered lists (1. 2. 3.) for rankings or sequences.
+- Maintain a clear hierarchy with consistent spacing.
+- Keep it concise (3-5 sentences or a structured list).
+- Do not mention implementation details like DataFrames, Python, or 'result_table'.
+- Do not use headers (# ## ###) unless there are multiple distinct logical sections."""
 
         try:
             summary_response = await asyncio.to_thread(
@@ -438,10 +441,10 @@ Formatting rules:
                     {
                         "role": "system",
                         "content": (
-                            "You summarize data analysis results in clear, "
-                            "non-technical language for business users. "
-                            "Format your responses using markdown: use **bold** for key numbers, "
-                            "bullet points for lists, and keep responses well-structured."
+                            "You are a professional Data Analyst. Summarize results in clear, "
+                            "business-friendly language. You must strictly follow markdown rules: "
+                            "use **bold** for metrics, bullet points for lists, and ensure "
+                            "no raw code blocks wrap your response."
                         ),
                     },
                     {"role": "user", "content": summary_prompt},
@@ -516,9 +519,10 @@ Formatting rules:
                                 "content": (
                                     "You are DataTalk AI, a friendly data analysis assistant. "
                                     "The user has uploaded a dataset and is chatting with you. "
-                                    "Respond warmly and helpfully. If they greet you, greet them back "
-                                    "and let them know you're ready to help analyze their data. "
-                                    "Format your responses using markdown where appropriate. "
+                                    "Respond warmly. Format your responses using strict markdown "
+                                    "where appropriate (e.g., **bolding** names). "
+                                    "IMPORTANT: Return raw markdown ONLY. Do not wrap your "
+                                    "entire response in markdown code blocks or triple backticks. "
                                     "Keep responses concise (2-3 sentences max)."
                                 ),
                             },
