@@ -64,6 +64,7 @@ async def upload_csv(
     Upload a CSV or XLSX file for analysis.
     """
     file_id = str(uuid.uuid4())
+    logger.info("Received upload request for file: %s", file.filename)
     await tracker.create_job(file_id)
 
     safe_filename = Path(file.filename or "upload.csv").name

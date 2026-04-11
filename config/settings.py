@@ -4,31 +4,13 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class DatabaseSettings(BaseModel):
-    """Database related configuration"""
-
-    host: str = "localhost"
-    port: int = 5432
-    name: str = "mydatabase"
-    user: str = "postgres"
-    password: str = ""
-    pool_size: int = 20
-    max_overflow: int = 10
-    echo_sql: bool = False
-
-    @property
-    def database_url(self) -> str:
-        """Construct database URL from settings"""
-        return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
-
-
 class FileSettings(BaseModel):
     """File upload related configuration"""
 
     allowed_file_types: List[str] = Field(
         default_factory=lambda: ["text/csv", "application/vnd.ms-excel"]
     )
-    max_file_size: int = 10  # In megabytes
+    max_file_size: int = 20  # In megabytes
 
     @property
     def max_file_size_bytes(self) -> int:
@@ -67,7 +49,6 @@ class AppSettings(BaseSettings):
     environment: str = "development"
 
     # Nested configurations
-    database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     api: APISettings = Field(default_factory=APISettings)
     files: FileSettings = Field(default_factory=FileSettings)
     ai: AISettings = Field(default_factory=AISettings)

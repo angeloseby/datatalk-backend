@@ -89,8 +89,8 @@ class DataProcessor:
                 "unique": int(col_data.nunique())
             }
             
-            # Numerical columns
-            if pd.api.types.is_numeric_dtype(col_data):
+            # Numerical columns (excluding boolean types)
+            if pd.api.types.is_numeric_dtype(col_data) and not pd.api.types.is_bool_dtype(col_data):
                 column_info.update({
                     "mean": float(col_data.mean()) if not col_data.isnull().all() else None,
                     "std": float(col_data.std()) if not col_data.isnull().all() else None,
@@ -101,6 +101,15 @@ class DataProcessor:
                         "50": float(col_data.quantile(0.50)) if not col_data.isnull().all() else None,
                         "75": float(col_data.quantile(0.75)) if not col_data.isnull().all() else None
                     }
+                })
+            
+            # Boolean columns
+            elif pd.api.types.is_bool_dtype(col_data):
+                true_count = int(col_data.sum())
+                column_info.update({
+                    "true_count": true_count,
+                    "false_count": int(len(col_data) - column_info["missing"] - true_count),
+                    "true_percentage": round((true_count / (len(col_data) - column_info["missing"])) * 100, 2) if (len(col_data) - column_info["missing"]) > 0 else 0
                 })
             
             # Categorical/string columns
