@@ -314,20 +314,56 @@ class AIAnalyst:
             if execution_error is not None:
                 chart_payload = None
 
-            final_answer_str = "Generated a data table and chart."
-            if chart_payload is None:
-                if execution_error is not None:
-                    final_answer_str = "Generated a data table. Chart generation failed, so chart was omitted."
-                else:
+            # --- ReAct Summarization: ask the LLM to interpret results ---
+            await tracker.update_status(job_id, JobStatus.PROCESSING, "Interpreting results...", 85)
+
+            table_markdown = table_df.head(10).to_markdown()
+            summary_prompt = f"""
+You are a Data Analyst presenting results to a business user.
+
+**User's Question:** {question}
+
+**Result Table (first 10 rows):**
+{table_markdown}
+
+Based ONLY on the table above, provide a concise, natural-language summary
+that directly answers the user's question. Be specific with numbers and
+insights. Do not mention code, DataFrames, or technical implementation
+details. Keep it to 2-4 sentences.
+"""
+
+            try:
+                summary_response = await asyncio.to_thread(
+                    self.client.chat.completions.create,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You summarize data analysis results in clear, "
+                                "non-technical language for business users."
+                            ),
+                        },
+                        {"role": "user", "content": summary_prompt},
+                    ],
+                    model="openai/gpt-oss-120b",
+                    temperature=0.3,
+                    max_tokens=300,
+                    stream=False,
+                )
+                final_answer_str = summary_response.choices[0].message.content or ""
+            except Exception:
+                # Fallback to a generic answer if summarization fails
+                final_answer_str = "Generated a data table and chart."
+                if chart_payload is None:
                     final_answer_str = "Generated a data table. No chart was returned."
-            
+
             await tracker.update_status(job_id, JobStatus.PROCESSING, "Finalizing...", 90)
 
             # 6. Save Success
             result_payload = ChatResult(
-                answer=final_answer_str,
+                summary=final_answer_str,
                 generated_code=cleaned_code,
-                data=final_data,
+                table=final_data,
                 chart=chart_payload,
             ).model_dump()
             

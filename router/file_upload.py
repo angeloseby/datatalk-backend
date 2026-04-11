@@ -124,22 +124,26 @@ async def process_uploaded_file(
 ):
     """
     Background task that updates the StatusTracker at every step.
+    Uses the AI Agentic Preprocessor for context-aware data cleaning.
     """
     processed_path: Path | None = None
 
     try:
-        processor = DataProcessor()
+        from services.ai_preprocessor import AIAgenticPreprocessor
 
-        await tracker.update_status(file_id, JobStatus.PROCESSING, "Loading data...", 10)
+        processor = DataProcessor()
+        agent_preprocessor = AIAgenticPreprocessor()
+
+        await tracker.update_status(file_id, JobStatus.PROCESSING, "Loading data into memory...", 10)
         df = read_tabular_data(file_bytes, file_type=file_type)
 
-        await tracker.update_status(file_id, JobStatus.PROCESSING, "Cleaning data...", 30)
-        cleaned_df = processor.clean_data(df)
+        await tracker.update_status(file_id, JobStatus.PROCESSING, "AI is inspecting and cleaning data...", 30)
+        cleaned_df = await agent_preprocessor.agentic_clean(df)
 
-        await tracker.update_status(file_id, JobStatus.PROCESSING, "Generating profile...", 60)
+        await tracker.update_status(file_id, JobStatus.PROCESSING, "Generating metadata profile...", 60)
         profile = processor.generate_profile(cleaned_df)
 
-        await tracker.update_status(file_id, JobStatus.PROCESSING, "Saving results...", 90)
+        await tracker.update_status(file_id, JobStatus.PROCESSING, "Saving processed data...", 90)
         _prepare_tmp_processed_dir()
         _cleanup_tmp_processed_files()
         processed_path = TMP_PROCESSED_DIR / f"{file_id}.parquet"
@@ -159,3 +163,4 @@ async def process_uploaded_file(
         if processed_path and processed_path.exists():
             processed_path.unlink(missing_ok=True)
         await tracker.set_error(file_id, str(exc))
+

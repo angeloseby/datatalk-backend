@@ -12,7 +12,7 @@ class ChatJobResponse(BaseModel):
 
 # This is the structure of the FINAL result stored in the tracker
 class ChatResult(BaseModel):
-    answer: str
+    summary: str
     generated_code: Optional[str] = None
-    data: Optional[list[Dict[str, Any]]] = None
+    table: Optional[list[Dict[str, Any]]] = None
     chart: Optional[Dict[str, Any]] = None
